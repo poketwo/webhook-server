@@ -100,11 +100,11 @@ async def dbl(request):
     )
     await redis.hdel(f"db:member", uid)
 
-    article = "an" if box_type == "ultra" else "a"
-    await redis.rpush(
-        "send_dm",
-        pickle.dumps((uid, f"Thanks for voting! You received {article} **{box_type} box**.")),
-    )
+    # article = "an" if box_type == "ultra" else "a"
+    # await redis.rpush(
+    #     "send_dm",
+    #     pickle.dumps((uid, f"Thanks for voting! You received {article} **{box_type} box**.")),
+    # )
 
     return PlainTextResponse("Success")
 
