@@ -24,6 +24,7 @@ PRODUCTS = {
 stripe.api_key = os.environ["STRIPE_KEY"]
 STRIPE_SECRET = os.environ["STRIPE_SECRET"]
 DBL_SECRET = os.environ["DBL_SECRET"]
+CAPTCHA_SECRET = os.environ["CAPTCHA_SECRET"]
 
 DATABASE_URI = os.getenv("DATABASE_URI")
 DATABASE_NAME = os.getenv("DATABASE_NAME")
@@ -143,4 +144,18 @@ async def stripe_webhook(request):
         "send_dm", pickle.dumps((uid, f"Thanks for donating! You received **{shards}** shards."))
     )
 
+    return PlainTextResponse("Success")
+
+
+@app.route("/captcha", methods=["POST"])
+async def captcha_webhook(request):
+    data = await request.json()
+
+    if data["secret"] != CAPTCHA_SECRET:
+        return PlainTextResponse("Invalid Secret", 401)
+
+    uid = int(data["uid"])
+    print(uid)
+
+    await redis.hdel("captcha", uid)
     return PlainTextResponse("Success")
