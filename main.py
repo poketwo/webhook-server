@@ -18,6 +18,7 @@ PRODUCTS = {
     "prod_I6mXA1Bq9xI52b": 1100,
     "prod_I6mX6x18dVqr9D": 2400,
     "prod_I6mXe6caYABny8": 5600,
+    "prod_Ja5G3l3d2MnMUU": 15000,
 }
 
 stripe.api_key = os.environ["STRIPE_KEY"]
