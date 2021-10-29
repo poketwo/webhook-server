@@ -103,7 +103,7 @@ async def dbl(request):
 
     article = "an" if box_type == "ultra" else "a"
     text = f"Thanks for voting! You received {article} **{box_type} box** and a **🎫 Trick-or-Treat Ticket**."
-    await redis.rpush("send_dm", pickle.dumps((uid, text)))
+    # await redis.rpush("send_dm", pickle.dumps((uid, text)))
 
     return PlainTextResponse("Success")
 
