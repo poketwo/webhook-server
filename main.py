@@ -96,13 +96,13 @@ async def dbl(request):
         {"_id": uid},
         {
             "$set": {"vote_streak": streak, "last_voted": now, "need_vote_reminder": True},
-            "$inc": {"vote_total": 1, f"gifts_{box_type}": 1, "halloween_tickets_2021": 1},
+            "$inc": {"vote_total": 1, f"gifts_{box_type}": 1},
         },
     )
     await redis.hdel(f"db:member", uid)
 
     article = "an" if box_type == "ultra" else "a"
-    text = f"Thanks for voting! You received {article} **{box_type} box** and a **🎫 Trick-or-Treat Ticket**."
+    text = f"Thanks for voting! You received {article} **{box_type} box**."
     # await redis.rpush("send_dm", pickle.dumps((uid, text)))
 
     return PlainTextResponse("Success")
