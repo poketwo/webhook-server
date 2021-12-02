@@ -184,6 +184,7 @@ async def stripe_webhook(request):
             pokemon.append(
                 {
                     "owner_id": uid,
+                    "owned_by": "user",
                     "species_id": 50032,
                     "level": level,
                     "xp": 0,
