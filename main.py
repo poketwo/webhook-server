@@ -9,6 +9,8 @@ import aioredis
 import stripe
 from motor.motor_asyncio import AsyncIOMotorClient
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse, PlainTextResponse
 
 # Constants
@@ -78,7 +80,10 @@ REDIS_CONF = {
 redis = None
 client = AsyncIOMotorClient(DATABASE_URI)
 db = client[DATABASE_NAME]
-app = Starlette(debug=os.getenv("DEBUG", False))
+
+
+middleware = [Middleware(CORSMiddleware, allow_origins=["*"])]
+app = Starlette(debug=os.getenv("DEBUG", False), middleware=middleware)
 
 
 # Routes
