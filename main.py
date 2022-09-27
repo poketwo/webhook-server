@@ -2,14 +2,14 @@ import asyncio
 import os
 import pickle
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 from urllib.parse import quote_plus
 
 import aioredis
 import stripe
 from motor.motor_asyncio import AsyncIOMotorClient
 from starlette.applications import Starlette
-from starlette.responses import PlainTextResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 
 # Constants
 
@@ -91,8 +91,15 @@ async def startup():
 
 
 @app.route("/")
-def hello(request):
+def hello(_request):
     return PlainTextResponse("Hello!")
+
+
+@app.route("/stats")
+async def stats(_request):
+    servers = await db.stats.aggregate([{"$group": {"_id": None, "servers": {"$sum": "$servers"}}}]).to_list(1)
+    users = await db.member.estimated_document_count()
+    return JSONResponse({"servers": servers[0]["servers"], "users": users})
 
 
 @app.route("/dbl", methods=["POST"])
@@ -172,9 +179,7 @@ async def stripe_webhook(request):
         await client.support.fundraiser.update_one(
             {"_id": "msf_2021"}, {"$inc": {"value": item.price.unit_amount}}, upsert=True
         )
-        await db.member.update_one(
-            {"_id": uid}, {"$inc": {"msf_donated_amount": item.price.unit_amount}}
-        )
+        await db.member.update_one({"_id": uid}, {"$inc": {"msf_donated_amount": item.price.unit_amount}})
 
         pokemon = []
         for _ in range(item.price.unit_amount // 1500):
