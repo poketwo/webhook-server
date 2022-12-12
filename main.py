@@ -107,22 +107,19 @@ async def stats(_request):
     return JSONResponse({"servers": servers[0]["servers"], "users": users})
 
 
-@app.route("/dbl", methods=["POST"])
-async def dbl(request):
+async def process_vote(request, provider, uid_key):
     if request.headers["authorization"] != DBL_SECRET:
         return PlainTextResponse("Invalid Secret", 401)
 
     json = await request.json()
     now = datetime.utcnow()
-    # top.gg uses "user", discordbotlist.com uses "id"
-    uid = int(json.get("user", json.get("id")))
+    uid = int(json[uid_key])
 
     res = await db.member.find_one({"_id": uid})
     if res is None:
         return PlainTextResponse("Invalid User", 404)
 
-    streak = res.get("vote_streak", 0)
-    streak += 1
+    streak = res.get("vote_streak", 0) + 1
 
     if streak >= 40 and streak % 10 == 0:
         box_type = "master"
@@ -136,13 +133,27 @@ async def dbl(request):
     await db.member.update_one(
         {"_id": uid},
         {
-            "$set": {"vote_streak": streak, "last_voted": now, "need_vote_reminder": True},
+            "$set": {
+                "vote_streak": streak,
+                f"last_voted_on.{provider}": now,
+                f"need_vote_reminder_on.{provider}": True,
+            },
             "$inc": {"vote_total": 1, f"gifts_{box_type}": 1},
         },
     )
     await redis.hdel(f"db:member", uid)
 
     return PlainTextResponse("Success")
+
+
+@app.route("/topgg", methods=["POST"])
+async def topgg(request):
+    return await process_vote(request, "topgg", "user")
+
+
+@app.route("/dbl", methods=["POST"])
+async def dbl(request):
+    return await process_vote(request, "dbl", "id")
 
 
 def get_checkout_item(id):
