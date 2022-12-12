@@ -114,7 +114,8 @@ async def dbl(request):
 
     json = await request.json()
     now = datetime.utcnow()
-    uid = int(json["user"])
+    # top.gg uses "user", discordbotlist.com uses "id"
+    uid = int(json.get("user", json.get("id")))
 
     res = await db.member.find_one({"_id": uid})
     if res is None:
