@@ -1,4 +1,8 @@
-name: Docker Image CI
+name: Build and Push
+
+permissions:
+  contents: read
+  packages: write
 
 on:
   push:
@@ -7,16 +11,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-        with:
-          submodules: true
-      - name: Publish Image
-        uses: whoan/docker-build-with-cache-action@v5
-        with:
-          username: poketwo
-          password: ${{ secrets.GHCR_PAT }}
-          registry: ghcr.io
-          image_name: webhook-server
-          image_tag: latest,${{ github.sha }}
+    uses: poketwo/workflows/.github/workflows/docker-image.yaml@main
+    with:
+      package-name: webhook-server
+    secrets:
+      GIT_AUTH_TOKEN: ${{ secrets.GIT_AUTH_TOKEN }}
