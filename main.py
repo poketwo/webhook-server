@@ -249,6 +249,17 @@ async def fetch_next_idx(uid, reserve=1):
     return result["next_idx"]
 
 
+@app.route("/account/{discord_id}", methods=["GET"])
+async def account(request):
+    discord_id = int(request.path_params["discord_id"])
+    member = await db.member.find_one({"_id": discord_id})
+    if member is None:
+        return PlainTextResponse("Not Found", status_code=404)
+
+    pokemon_count = await db.pokemon.count_documents({"owner_id": discord_id, "owned_by": "user"})
+    return JSONResponse({"balance": member.get("balance", 0), "pokemonCount": pokemon_count})
+
+
 @app.route("/captcha", methods=["POST"])
 async def captcha_webhook(request):
     data = await request.json()
