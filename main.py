@@ -58,6 +58,7 @@ stripe.api_key = os.environ["STRIPE_KEY"]
 STRIPE_SECRET = os.environ["STRIPE_SECRET"]
 DBL_SECRET = os.environ["DBL_SECRET"]
 CAPTCHA_SECRET = os.environ["CAPTCHA_SECRET"]
+ACCOUNT_SECRET = os.environ["ACCOUNT_SECRET"]
 
 DATABASE_URI = os.getenv("DATABASE_URI")
 DATABASE_NAME = os.getenv("DATABASE_NAME")
@@ -247,6 +248,24 @@ async def fetch_next_idx(uid, reserve=1):
     )
     await redis.hdel(f"db:member", uid)
     return result["next_idx"]
+
+
+@app.route("/account/{discord_id}", methods=["GET"])
+async def account(request):
+    if request.headers.get("authorization") != ACCOUNT_SECRET:
+        return PlainTextResponse("Invalid Secret", status_code=401)
+
+    try:
+        discord_id = int(request.path_params["discord_id"])
+    except ValueError:
+        return PlainTextResponse("Invalid ID", status_code=400)
+
+    member = await db.member.find_one({"_id": discord_id})
+    if member is None:
+        return PlainTextResponse("Not Found", status_code=404)
+
+    pokemon_count = await db.pokemon.count_documents({"owner_id": discord_id, "owned_by": "user"})
+    return JSONResponse({"balance": member.get("balance", 0), "pokemonCount": pokemon_count})
 
 
 @app.route("/captcha", methods=["POST"])
