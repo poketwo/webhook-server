@@ -277,6 +277,8 @@ async def captcha_webhook(request):
 
     uid = int(data["uid"])
 
-    await redis.hdel("captcha", uid)
-    await db.member.update_one({"_id": uid}, {"$inc": {"captchas_solved": 1}})
+    await db.member.update_one(
+        {"_id": uid}, {"$set": {"captcha_required": False}, "$inc": {"captchas_solved": 1}}
+    )
+    await redis.hdel("db:member", uid)
     return PlainTextResponse("Success")
