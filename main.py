@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import os
 import pickle
 import random
@@ -268,11 +269,15 @@ async def account(request):
     return JSONResponse({"balance": member.get("balance", 0), "pokemonCount": pokemon_count})
 
 
+def is_captcha_secret(value):
+    return isinstance(value, str) and hmac.compare_digest(value.encode(), CAPTCHA_SECRET.encode())
+
+
 @app.route("/captcha", methods=["POST"])
 async def captcha_webhook(request):
     data = await request.json()
 
-    if data["secret"] != CAPTCHA_SECRET:
+    if not is_captcha_secret(data.get("secret")):
         return PlainTextResponse("Invalid Secret", 401)
 
     uid = int(data["uid"])
