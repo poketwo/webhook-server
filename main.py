@@ -1,13 +1,16 @@
 import asyncio
+import hmac
 import os
 import pickle
 import random
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from urllib.parse import quote_plus
 
 import aioredis
 import stripe
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ASCENDING, DESCENDING
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
@@ -24,6 +27,15 @@ SHARD_PRODUCT_IDS = {
 }
 
 MSF_FUNDRAISER_PRODUCT_IDS = ["prod_Kf94LTHSJjqsrP", "prod_Kf94xExNn3icbL"]
+
+MEMBER_CACHE_KEY = "db:member"
+
+# Sightings are deleted this long after the last captcha solve on that network, unless a
+# suspension of the account or of the network needs them for longer.
+NETWORK_SIGHTING_RETENTION = timedelta(days=90)
+# Hex HMAC-SHA256 digest computed by the verify site; raw IPs never reach this server.
+NETWORK_HASH = re.compile(r"[0-9a-f]{64}")
+HOSTING_TARGET_ID = "hosting"
 
 
 NATURES = [
@@ -94,6 +106,17 @@ app = Starlette(debug=os.getenv("DEBUG", False), middleware=middleware)
 async def startup():
     global redis
     redis = await aioredis.create_redis_pool(**REDIS_CONF)
+    await create_network_sighting_indexes()
+
+
+async def create_network_sighting_indexes():
+    sightings = db.network_sightings
+    await sightings.create_index([("user_id", ASCENDING), ("ip_hash", ASCENDING)], unique=True)
+    await sightings.create_index([("user_id", ASCENDING), ("last_seen", DESCENDING)])
+    await sightings.create_index("ip_hash")
+    await sightings.create_index("subnet_hash")
+    await sightings.create_index("asn")
+    await sightings.create_index("expires_at", expireAfterSeconds=0)
 
 
 @app.route("/")
@@ -268,17 +291,153 @@ async def account(request):
     return JSONResponse({"balance": member.get("balance", 0), "pokemonCount": pokemon_count})
 
 
+def is_captcha_secret(value):
+    return isinstance(value, str) and hmac.compare_digest(value.encode(), CAPTCHA_SECRET.encode())
+
+
+def is_network_hash(value):
+    return isinstance(value, str) and NETWORK_HASH.fullmatch(value) is not None
+
+
+def is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def parse_network(data):
+    """The payload's `network` field: None if absent, ValueError if malformed."""
+
+    network = data.get("network")
+    if network is None:
+        return None
+    if not isinstance(network, dict):
+        raise ValueError
+    sighting = {
+        "ip_hash": network.get("ip_hash"),
+        "subnet_hash": network.get("subnet_hash"),
+        "asn": network.get("asn"),
+        "key_version": network.get("key_version"),
+    }
+    if not is_network_hash(sighting["ip_hash"]) or not is_int(sighting["key_version"]):
+        raise ValueError
+    if sighting["subnet_hash"] is not None and not is_network_hash(sighting["subnet_hash"]):
+        raise ValueError
+    if sighting["asn"] is not None and not is_int(sighting["asn"]):
+        raise ValueError
+    return sighting
+
+
+def network_target_ids(sighting, hosting_asns):
+    """Ids of the `network` documents that can suspend this sighting. Matches the bot's format."""
+
+    target_ids = [f"ip:{sighting['ip_hash']}"]
+    if sighting["subnet_hash"] is not None:
+        target_ids.append(f"subnet:{sighting['subnet_hash']}")
+    if sighting["asn"] is not None:
+        target_ids.append(f"asn:{sighting['asn']}")
+        if sighting["asn"] in hosting_asns:
+            target_ids.append(HOSTING_TARGET_ID)
+    return target_ids
+
+
+async def find_network_suspension(sighting, now):
+    """Strongest active suspension of the sighting's network: permanent, then latest expiry."""
+
+    hosting = await db.network.find_one({"_id": HOSTING_TARGET_ID}, {"asns": 1})
+    target_ids = network_target_ids(sighting, hosting.get("asns", []) if hosting else [])
+    suspensions = await db.network.find(
+        {
+            "_id": {"$in": target_ids},
+            "$or": [{"suspended": True}, {"suspended_until": {"$gt": now}}],
+        }
+    ).to_list(None)
+    return max(
+        suspensions,
+        key=lambda doc: (doc.get("suspended", False), doc.get("suspended_until") or datetime.min),
+        default=None,
+    )
+
+
+def member_network_suspension(suspension):
+    """Stores the kind of target rather than its id, so hashes aren't copied onto members."""
+
+    return {
+        "kind": suspension["_id"].partition(":")[0],
+        "reason": suspension.get("suspension_reason"),
+        "until": None if suspension.get("suspended") else suspension.get("suspended_until"),
+    }
+
+
+def sighting_expiry(now, *suspensions):
+    """When the sighting may be deleted; None keeps it while a permanent suspension is in place."""
+
+    expiry = now + NETWORK_SIGHTING_RETENTION
+    for suspension in suspensions:
+        if suspension is None:
+            continue
+        if suspension.get("suspended"):
+            return None
+        until = suspension.get("suspended_until")
+        if until is not None and until > expiry:
+            expiry = until
+    return expiry
+
+
+async def record_network_sighting(uid, sighting, now, expires_at):
+    update = {
+        "$set": {
+            "subnet_hash": sighting["subnet_hash"],
+            "asn": sighting["asn"],
+            "key_version": sighting["key_version"],
+            "last_seen": now,
+        },
+        "$setOnInsert": {"first_seen": now},
+        "$inc": {"solves": 1},
+    }
+    if expires_at is None:
+        update["$unset"] = {"expires_at": 1}
+    else:
+        update["$set"]["expires_at"] = expires_at
+    await db.network_sightings.update_one(
+        {"user_id": uid, "ip_hash": sighting["ip_hash"]}, update, upsert=True
+    )
+
+
 @app.route("/captcha", methods=["POST"])
 async def captcha_webhook(request):
     data = await request.json()
 
-    if data["secret"] != CAPTCHA_SECRET:
+    if not is_captcha_secret(data.get("secret")):
         return PlainTextResponse("Invalid Secret", 401)
 
     uid = int(data["uid"])
+    try:
+        sighting = parse_network(data)
+    except ValueError:
+        return PlainTextResponse("Invalid Network", 400)
 
-    await db.member.update_one(
-        {"_id": uid}, {"$set": {"captcha_required": False}, "$inc": {"captchas_solved": 1}}
+    update = {"$set": {"captcha_required": False}, "$inc": {"captchas_solved": 1}}
+    network_suspension = None
+
+    if sighting is not None:
+        member = await db.member.find_one({"_id": uid}, {"suspended": 1, "suspended_until": 1})
+        if member is not None:
+            now = datetime.utcnow()
+            suspension = await find_network_suspension(sighting, now)
+            expires_at = sighting_expiry(now, member, suspension)
+            await record_network_sighting(uid, sighting, now, expires_at)
+            if suspension is None:
+                update["$unset"] = {"network_suspension": 1}
+            else:
+                network_suspension = member_network_suspension(suspension)
+                update["$set"]["network_suspension"] = network_suspension
+
+    await db.member.update_one({"_id": uid}, update)
+    await redis.hdel(MEMBER_CACHE_KEY, uid)
+
+    until = network_suspension and network_suspension["until"]
+    return JSONResponse(
+        {
+            "network_suspended": network_suspension is not None,
+            "network_suspended_until": until.isoformat() if until else None,
+        }
     )
-    await redis.hdel("db:member", uid)
-    return PlainTextResponse("Success")
