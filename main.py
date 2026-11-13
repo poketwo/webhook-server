@@ -29,6 +29,8 @@ SHARD_PRODUCT_IDS = {
 MSF_FUNDRAISER_PRODUCT_IDS = ["prod_Kf94LTHSJjqsrP", "prod_Kf94xExNn3icbL"]
 
 MEMBER_CACHE_KEY = "db:member"
+# Solve times kept per user on their anticheat document.
+MAX_CAPTCHA_SOLVES = 30
 
 # Sightings are deleted this long after the last captcha solve on that network, unless a
 # suspension of the account or of the network needs them for longer.
@@ -402,6 +404,21 @@ async def record_network_sighting(uid, sighting, now, expires_at):
     )
 
 
+async def record_captcha_solve(uid, member, solve_ms, now):
+    """Keep the user's recent solve times on their anticheat document, if they have one."""
+
+    required_at = member.get("captcha_required_at")
+    solve = {
+        "at": now,
+        "gate_s": (now - required_at).total_seconds() if required_at else None,
+        "solve_ms": solve_ms if is_int(solve_ms) else None,
+    }
+    await db.anticheat.update_one(
+        {"_id": uid},
+        {"$push": {"captcha_solves": {"$each": [solve], "$slice": -MAX_CAPTCHA_SOLVES}}},
+    )
+
+
 @app.route("/captcha", methods=["POST"])
 async def captcha_webhook(request):
     data = await request.json()
@@ -415,18 +432,26 @@ async def captcha_webhook(request):
     except ValueError:
         return PlainTextResponse("Invalid Network", 400)
 
-    update = {"$set": {"captcha_required": False}, "$inc": {"captchas_solved": 1}}
+    update = {
+        "$set": {"captcha_required": False},
+        "$inc": {"captchas_solved": 1},
+        "$unset": {"captcha_required_at": 1},
+    }
     network_suspension = None
+    now = datetime.utcnow()
+    member = await db.member.find_one(
+        {"_id": uid}, {"suspended": 1, "suspended_until": 1, "captcha_required_at": 1}
+    )
 
-    if sighting is not None:
-        member = await db.member.find_one({"_id": uid}, {"suspended": 1, "suspended_until": 1})
-        if member is not None:
-            now = datetime.utcnow()
+    if member is not None:
+        await record_captcha_solve(uid, member, data.get("solve_ms"), now)
+
+        if sighting is not None:
             suspension = await find_network_suspension(sighting, now)
             expires_at = sighting_expiry(now, member, suspension)
             await record_network_sighting(uid, sighting, now, expires_at)
             if suspension is None:
-                update["$unset"] = {"network_suspension": 1}
+                update["$unset"]["network_suspension"] = 1
             else:
                 network_suspension = member_network_suspension(suspension)
                 update["$set"]["network_suspension"] = network_suspension
